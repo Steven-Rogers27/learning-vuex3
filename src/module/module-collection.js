@@ -6,13 +6,25 @@ export default class ModuleCollection {
     // register root module (Vuex.Store options)
     this.register([], rawRootModule, false)
   }
-
+  /**
+   * 借助 Array.prototype.reduce函数递归的从 root Module 开始获取
+   * path数组所指示到的子 Module
+   * @param {Array} path 由嵌套的模块名组成的数组
+   */
   get (path) {
     return path.reduce((module, key) => {
       return module.getChild(key)
     }, this.root)
   }
 
+  /**
+   * 把嵌套的 modules 的 key 组成的数组拼成 'some/nest/module' 这样的字符串，
+   * 不过只有当该 Module 的 namespaced 配置为 true 时，才会把这一层级 Module
+   * 的 key 加进拼接的结果中。假如 'some/nest/module' 的第二层 nest Module 没有
+   * 配 namespaced 为 true，则最终生成的 namespace 就是 'some/module'。也就是说，
+   * 如果所有嵌套的 modules 都没有配 namespaced 为 true，则最终的 namespace 仍为空串''
+   * @param {Array} path 
+   */
   getNamespace (path) {
     let module = this.root
     return path.reduce((namespace, key) => {

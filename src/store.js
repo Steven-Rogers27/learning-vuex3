@@ -49,7 +49,7 @@ export class Store {
 
     // strict mode
     this.strict = strict
-
+    // 拿到rootModule中的 state 对象
     const state = this._modules.root.state
 
     // init root module.
@@ -62,6 +62,8 @@ export class Store {
     resetStoreVM(this, state)
 
     // apply plugins
+    // 每个 plugin 函数都接收 store 作为参数，并且是在 new Store() 的构造函数中就
+    // 执行
     plugins.forEach(plugin => plugin(this))
 
     const useDevtools = options.devtools !== undefined ? options.devtools : Vue.config.devtools
@@ -101,7 +103,7 @@ export class Store {
         handler(payload)
       })
     })
-
+    // 在 commit 之后同步执行
     this._subscribers
       .slice() // shallow copy to prevent iterator invalidation if subscriber synchronously calls unsubscribe
       .forEach(sub => sub(mutation, this.state))
@@ -291,10 +293,18 @@ function resetStoreVM (store, state, hot) {
   const wrappedGetters = store._wrappedGetters
   const computed = {}
   forEachValue(wrappedGetters, (fn, key) => {
+    // 1. store._wrappedGetters 中的 fn,就是 registerGetter 函数中加入的
+    // wrappedGetter 函数，它接收 store 作为参数
+    // 2. store._wrappedGetters 中的 key, 是会带有命名空间的 'name/space/type'
+    // 形式
     // use computed to leverage its lazy-caching mechanism
     // direct inline function use will lead to closure preserving oldVm.
     // using partial to return function with only arguments preserved in closure environment.
+    // 利用 Vue 的 computed 属性的延迟计算机制（只要依赖项没有变化，computed 值就不重新计算），
+    // 直接使用内联函数会导致在闭包环境中保留了老的 vm 实例，
+    // 使用 partial 函数返回的函数，则只在闭包环境中保留了参数
     computed[key] = partial(fn, store)
+    // 给 store.getters 上定义的也是 'name/space/type' 这样的 key
     Object.defineProperty(store.getters, key, {
       get: () => store._vm[key],
       enumerable: true // for local getters
@@ -306,6 +316,8 @@ function resetStoreVM (store, state, hot) {
   // some funky global mixins
   const silent = Vue.config.silent
   Vue.config.silent = true
+  // 借助 Vue 的发布/订阅模式来监听 state 的变化，从而更新
+  // getters 的值
   store._vm = new Vue({
     data: {
       $$state: state
@@ -331,6 +343,14 @@ function resetStoreVM (store, state, hot) {
   }
 }
 
+/**
+ * 
+ * @param {Object} store 当前 store 对象
+ * @param {Object} rootState 当前 store 的 rootModule 中的 state 对象
+ * @param {Array} path 嵌套的 modules 的属性 key 组成的数组
+ * @param {Object} module path 路径所指定到的 Module，初始 path 为 []，则这里就是 rootModule
+ * @param {*} hot 
+ */
 function installModule (store, rootState, path, module, hot) {
   const isRoot = !path.length
   const namespace = store._modules.getNamespace(path)
@@ -358,7 +378,13 @@ function installModule (store, rootState, path, module, hot) {
       Vue.set(parentState, moduleName, module.state)
     })
   }
-
+  // 传入 action 的 handler 函数的第一个 context 参数中的 dispatch, commit, getters
+  // state 都来自这个 local 中的局部化值，当该 Module
+  // 是某个嵌套的子 Module, 并且配置了 namespaced 为 true，则该 Module 的 action
+  // 的 handler 函数从 context 参数中获取的就是局部化的 dispacth, commit, getters，
+  // 而即便没有配置 namespaced 为 true, 只要有 modules，state 都只是该 module 的。使用时
+  // 用户仍然调用 dispatch('type')，但是局部化的 dispatch/commit 内部会加上命名空间，执行
+  // dispatch('name/space/type')，
   const local = module.context = makeLocalContext(store, namespace, path)
 
   module.forEachMutation((mutation, key) => {
@@ -367,6 +393,8 @@ function installModule (store, rootState, path, module, hot) {
   })
 
   module.forEachAction((action, key) => {
+    // 如果用户定义的 action 是个对象，而且配置了 root 为 true,
+    // 则不在局部 type 前加 namespace, 也就是把该 action 注册成全局 action
     const type = action.root ? key : namespace + key
     const handler = action.handler || action
     registerAction(store, type, handler, local)
@@ -376,7 +404,7 @@ function installModule (store, rootState, path, module, hot) {
     const namespacedType = namespace + key
     registerGetter(store, namespacedType, getter, local)
   })
-
+  // 递归的注册 modules 中嵌套的子 Module
   module.forEachChild((child, key) => {
     installModule(store, rootState, path.concat(key), child, hot)
   })
@@ -388,7 +416,11 @@ function installModule (store, rootState, path, module, hot) {
  */
 function makeLocalContext (store, namespace, path) {
   const noNamespace = namespace === ''
-
+  // 局部化的 dispatch 和 commit 不用用户手动执行诸如 dispatch('name/space/type', payload)，
+  // 而依然是执行 dispatch('type', payload)，局部化的 dispatch 会在 'type' 前加上命名空间路径
+  // 1. 局部化的 dispatch, commit, getters 只有在当 Module 配置了 namespaced 为 true 时，局部化
+  // 的效果才会启用。
+  // 2. 而只要存在 modules，state 就只是子 Module 局部的
   const local = {
     dispatch: noNamespace ? store.dispatch : (_type, _payload, _options) => {
       const args = unifyObjectStyle(_type, _payload, _options)
@@ -396,13 +428,14 @@ function makeLocalContext (store, namespace, path) {
       let { type } = args
 
       if (!options || !options.root) {
+        // 如果没指定 options.root，在命名空间范围内，使用 'name/space/type' 这样的 type 执行 dispatch
         type = namespace + type
         if (__DEV__ && !store._actions[type]) {
           console.error(`[vuex] unknown local action type: ${args.type}, global type: ${type}`)
           return
         }
       }
-
+      // 如果指定了 options.root，则在全局范围内使用 'type' 这样的 type 执行 dispatch
       return store.dispatch(type, payload)
     },
 
@@ -432,6 +465,7 @@ function makeLocalContext (store, namespace, path) {
         : () => makeLocalGetters(store, namespace)
     },
     state: {
+      // 即便 module 没有配 namespaced 为 true, 返回的也只是 module的局部 state
       get: () => getNestedState(store.state, path)
     }
   })
@@ -443,6 +477,7 @@ function makeLocalGetters (store, namespace) {
   if (!store._makeLocalGettersCache[namespace]) {
     const gettersProxy = {}
     const splitPos = namespace.length
+    // store.getters 中是以 'name/space/local/type' 这样的 key 保存的值
     Object.keys(store.getters).forEach(type => {
       // skip if the target getter is not match this namespace
       if (type.slice(0, splitPos) !== namespace) return
@@ -465,15 +500,26 @@ function makeLocalGetters (store, namespace) {
 }
 
 function registerMutation (store, type, handler, local) {
+  // 如果 module 配置了 namespaced 为 true, 这里传入的 type 就是如 'name/space/type' 这样
+  // 形式的
   const entry = store._mutations[type] || (store._mutations[type] = [])
   entry.push(function wrappedMutationHandler (payload) {
+    // mutation 的 handler 中的 this 指向 store 对象
+    // 给 handler 传入的 state 也是只包含当前 module 的局部化的 state,
     handler.call(store, local.state, payload)
   })
 }
 
 function registerAction (store, type, handler, local) {
+  // 如果 module 配置了 namespaced 为 true, 而且用户在定义 action 时没有配置 root 为 true,
+  // 则这里传入的 type 是如 'name/space/type' 这样的
   const entry = store._actions[type] || (store._actions[type] = [])
   entry.push(function wrappedActionHandler (payload) {
+    // action 的 handler 函数中的 this 指向 store 对象，
+    // 传入的 dispatch, commit, getters, state 都是局部化的，
+    // 只不过只有当配置了 namespaced 为 true 时，dispatch, commit, getters
+    // 才是真的局部化，也就是可以使用 'name/space/type' 这样的 type 只在命名空间
+    // 内分发
     let res = handler.call(store, {
       dispatch: local.dispatch,
       commit: local.commit,
@@ -482,6 +528,7 @@ function registerAction (store, type, handler, local) {
       rootGetters: store.getters,
       rootState: store.state
     }, payload)
+    // 确保 handler 的返回值是 Promise 对象
     if (!isPromise(res)) {
       res = Promise.resolve(res)
     }
@@ -497,6 +544,8 @@ function registerAction (store, type, handler, local) {
 }
 
 function registerGetter (store, type, rawGetter, local) {
+  // 如果 module 配置了 namespaced 为 true, 这里传入的 type 就是如 'name/space/type' 这样
+  // 形式的
   if (store._wrappedGetters[type]) {
     if (__DEV__) {
       console.error(`[vuex] duplicate getter key: ${type}`)
@@ -516,6 +565,8 @@ function registerGetter (store, type, rawGetter, local) {
 function enableStrictMode (store) {
   store._vm.$watch(function () { return this._data.$$state }, () => {
     if (__DEV__) {
+      // 只有在 store._withCommit 方法内才能合法的将 store._committing 置 true，
+      // 也就是只能通过 store._withCommit() 来修改 store 的 state
       assert(store._committing, `do not mutate vuex store state outside mutation handlers.`)
     }
   }, { deep: true, sync: true })
